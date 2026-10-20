@@ -2,8 +2,9 @@
 
 `swe_af.runtime.antigravity_adapter.AntigravityAdapter` runs the local `agy`
 executable as an isolated subprocess. It detects the executable with PATH lookup,
-uses the CLI's pre-existing official authentication, feeds the prompt on stdin,
-and requests `--output-format stream-json`. Its strict JSONL parser preserves
+uses the CLI's pre-existing authentication, invokes documented print mode with
+`--output-format stream-json`, passes `--sandbox`, and supports the documented
+`--conversation` continuation option. Its strict JSONL parser preserves
 progress/tool/result events; callers can observe each event through `on_event`.
 The asynchronous `harness()` streams events live, enforces timeout and
 concurrency limits, and terminates the child on cancellation. The synchronous
@@ -19,8 +20,8 @@ is explicit/resolved, execution has a timeout and per-adapter concurrency limit,
 and no dangerous permission-bypass flags are used. Process cancellation and
 output parse errors fail closed. CLI stderr is intentionally not surfaced.
 
-Conversation resume is deliberately rejected until the installed official CLI
-documents its continuation flag; no guessed `--resume` option is invoked. No REST/private API,
+The installed `agy --help` documents `--print`, `--prompt`, `--output-format`,
+`--sandbox`, and `--conversation`; these are the flags used here. No REST/private API,
 credential extraction, automatic commit, or merge is performed. This adapter
 reports CLI events and final result but does not assert workspace changes were
 committed or create GitHub PRs. Validate `agy --help` against the installed
@@ -51,5 +52,6 @@ Jules quota/authentication in this environment.
 
 `AGENTFIELD_SERVER=http://localhost:9999 python -m pytest -q tests/test_antigravity_adapter.py`
 
-The tests mock subprocess execution; they do not validate live CLI syntax,
-authentication, quotas, or permissions.
+The tests mock subprocess execution. The local executable's `agy --help` was
+inspected to verify supported flags, but no authenticated task was run; model
+access, quotas, and effective sandbox behavior remain externally unverified.

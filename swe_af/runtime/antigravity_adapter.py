@@ -82,11 +82,12 @@ class AntigravityAdapter:
         workspace = Path(cwd or os.getcwd()).resolve()
         if not workspace.is_dir():
             raise ValueError("Antigravity workspace must be an existing directory")
-        command = [self.executable, "--output-format", "stream-json"]
+        command = [
+            self.executable, "--print", "--prompt", prompt,
+            "--output-format", "stream-json", "--sandbox",
+        ]
         if conversation_id:
-            raise RuntimeError(
-                "Antigravity conversation resume is disabled until the installed official CLI documents its resume flag"
-            )
+            command.extend(["--conversation", conversation_id])
         started = time.monotonic()
         if not self._semaphore.acquire(timeout=timeout or self.timeout):
             raise TimeoutError("timed out waiting for an Antigravity concurrency slot")
@@ -105,7 +106,7 @@ class AntigravityAdapter:
                 start_new_session=(os.name != "nt"),
             )
             try:
-                stdout, stderr = process.communicate(prompt, timeout=timeout or self.timeout)
+                stdout, stderr = process.communicate(timeout=timeout or self.timeout)
             except subprocess.TimeoutExpired as exc:
                 self._terminate(process)
                 raise TimeoutError("Antigravity CLI timed out") from exc
@@ -157,20 +158,21 @@ class AntigravityAdapter:
         """Run the CLI asynchronously, delivering progress as JSONL arrives."""
         if not self.available():
             raise RuntimeError(f"Antigravity CLI executable not found: {self.executable}")
-        if options.get("conversation_id"):
-            raise RuntimeError(
-                "Antigravity conversation resume is disabled until the installed official CLI documents its resume flag"
-            )
         workspace = Path(options.get("cwd") or options.get("project_dir") or os.getcwd()).resolve()
         if not workspace.is_dir():
             raise ValueError("Antigravity workspace must be an existing directory")
-        command = [self.executable, "--output-format", "stream-json"]
+        command = [
+            self.executable, "--print", "--prompt", prompt,
+            "--output-format", "stream-json", "--sandbox",
+        ]
+        if options.get("conversation_id"):
+            command.extend(["--conversation", str(options["conversation_id"])])
         timeout = options.get("timeout_seconds") or self.timeout
         on_event = options.get("on_event")
         started = time.monotonic()
         async with self._async_semaphore:
             process = await asyncio.create_subprocess_exec(
-                *command, cwd=workspace, stdin=asyncio.subprocess.PIPE,
+                *command, cwd=workspace, stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=(os.name != "nt"),
             )
@@ -205,10 +207,6 @@ class AntigravityAdapter:
             stdout_task = asyncio.create_task(read_events())
             stderr_task = asyncio.create_task(drain_stderr())
             try:
-                assert process.stdin is not None
-                process.stdin.write(prompt.encode("utf-8"))
-                await process.stdin.drain()
-                process.stdin.close()
                 await asyncio.wait_for(
                     asyncio.gather(process.wait(), stdout_task, stderr_task),
                     timeout=float(timeout),

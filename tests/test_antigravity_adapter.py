@@ -28,15 +28,17 @@ def test_cli_result_and_progress_callback(monkeypatch, tmp_path):
     class FakeProcess:
         returncode = 0
 
-        def communicate(self, prompt, timeout):
-            assert prompt == "task"
+        def communicate(self, timeout):
             return output, ""
 
         def poll(self):
             return 0
 
     def fake_popen(command, **kwargs):
-        assert command == ["agy", "--output-format", "stream-json"]
+        assert command == [
+            "agy", "--print", "--prompt", "task", "--output-format", "stream-json",
+            "--sandbox", "--conversation", "conversation-1",
+        ]
         assert kwargs["shell"] is False
         assert "--dangerously-skip-permissions" not in command
         return FakeProcess()
@@ -44,7 +46,9 @@ def test_cli_result_and_progress_callback(monkeypatch, tmp_path):
     monkeypatch.setattr("swe_af.runtime.antigravity_adapter.shutil.which", lambda _: "agy")
     monkeypatch.setattr("swe_af.runtime.antigravity_adapter.subprocess.Popen", fake_popen)
     seen = []
-    result = AntigravityAdapter().run("task", cwd=tmp_path, on_event=seen.append)
+    result = AntigravityAdapter().run(
+        "task", cwd=tmp_path, on_event=seen.append, conversation_id="conversation-1"
+    )
     assert result.result == "finished"
     assert result.session_id == "abc"
     assert [event["type"] for event in seen] == ["progress", "result"]
@@ -87,7 +91,9 @@ def test_async_harness_streams_progress_events(monkeypatch, tmp_path):
     monkeypatch.setattr("swe_af.runtime.antigravity_adapter.shutil.which", lambda _: "agy")
 
     async def fake_create(*args, **kwargs):
-        assert args == ("agy", "--output-format", "stream-json")
+        assert args == (
+            "agy", "--print", "--prompt", "task", "--output-format", "stream-json", "--sandbox"
+        )
         assert kwargs["cwd"] == tmp_path
         return Process()
 
