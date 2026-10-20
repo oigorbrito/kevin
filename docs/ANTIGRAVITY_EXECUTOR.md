@@ -30,7 +30,20 @@ CLI execution. `build_executor_dispatcher()` exposes it explicitly alongside
 Antigravity and AgentField. Jules now accepts `repository="owner/repo"` and an
 optional `branch`, and `session_id` resumes observation without creating a new
 session. The existing Jules consolidation branch was not merged or modified;
-this worktree consolidates only through the dispatcher factory.
+this worktree consolidates through the dispatcher factory. Jules' adapter also
+supports paginated authorized-source discovery, explicit `continue_message`,
+explicit `approve_plan=True`, and extraction of PR/commit URLs or patches only
+when those artifacts occur in returned activity data. No merge is ever initiated.
+
+For automatic duplicate protection, callers must provide a stable
+`operation_id`. The adapter claims that key atomically and journals a prompt
+fingerprint before the create request; retries recover a journaled session, but
+an interrupted/ambiguous create without a saved session ID fails closed and
+requires inspecting Jules before retrying. Journals/claim files contain session
+metadata and a one-way prompt fingerprint, never prompts or API keys. Without an
+`operation_id`, callers must persist and resume the returned `session_id`
+themselves. No end-to-end smoke test verified the REST endpoints or external
+Jules quota/authentication in this environment.
 
 ## Deterministic tests
 
