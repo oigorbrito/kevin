@@ -5,7 +5,9 @@ executable as an isolated subprocess. It detects the executable with PATH lookup
 uses the CLI's pre-existing official authentication, feeds the prompt on stdin,
 and requests `--output-format stream-json`. Its strict JSONL parser preserves
 progress/tool/result events; callers can observe each event through `on_event`.
-The asynchronous `harness()` method offloads subprocess work from the event loop.
+The asynchronous `harness()` streams events live, enforces timeout and
+concurrency limits, and terminates the child on cancellation. The synchronous
+`run()` helper is for blocking callers only.
 
 Selection is opt-in: call `build_executor_dispatcher()` from
 `swe_af.runtime.executor_backends` and set `SWE_HARNESS_BACKEND=antigravity`
@@ -17,8 +19,8 @@ is explicit/resolved, execution has a timeout and per-adapter concurrency limit,
 and no dangerous permission-bypass flags are used. Process cancellation and
 output parse errors fail closed. CLI stderr is intentionally not surfaced.
 
-The optional `conversation_id` currently maps to `--resume`; use only with CLI
-versions whose official help documents that flag. No REST/private API,
+Conversation resume is deliberately rejected until the installed official CLI
+documents its continuation flag; no guessed `--resume` option is invoked. No REST/private API,
 credential extraction, automatic commit, or merge is performed. This adapter
 reports CLI events and final result but does not assert workspace changes were
 committed or create GitHub PRs. Validate `agy --help` against the installed

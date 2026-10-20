@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 
 import pytest
@@ -47,6 +48,115 @@ def test_cli_result_and_progress_callback(monkeypatch, tmp_path):
     assert result.result == "finished"
     assert result.session_id == "abc"
     assert [event["type"] for event in seen] == ["progress", "result"]
+
+
+def test_async_harness_streams_progress_events(monkeypatch, tmp_path):
+    output = b'{"type":"progress"}\n{"type":"result","result":"done"}\n'
+
+    class Input:
+        def write(self, data):
+            assert data == b"task"
+
+        async def drain(self):
+            return None
+
+        def close(self):
+            return None
+
+    class Process:
+        def __init__(self):
+            self.stdin = Input()
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_data(output)
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.returncode = None
+            self.pid = 123
+
+        async def wait(self):
+            self.returncode = 0
+            return 0
+
+        def terminate(self):
+            self.returncode = -1
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr("swe_af.runtime.antigravity_adapter.shutil.which", lambda _: "agy")
+
+    async def fake_create(*args, **kwargs):
+        assert args == ("agy", "--output-format", "stream-json")
+        assert kwargs["cwd"] == tmp_path
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create)
+    received = []
+    result = asyncio.run(
+        AntigravityAdapter().harness("task", cwd=tmp_path, on_event=received.append)
+    )
+    assert [event["type"] for event in received] == ["progress", "result"]
+    assert result.result == "done"
+
+
+def test_async_cancellation_terminates_child(monkeypatch, tmp_path):
+    progress_seen = asyncio.Event()
+    terminated = []
+
+    class Input:
+        def write(self, data):
+            return None
+
+        async def drain(self):
+            return None
+
+        def close(self):
+            return None
+
+    class Process:
+        def __init__(self):
+            self.stdin = Input()
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_data(b'{"type":"progress"}\n')
+            self.stderr.feed_eof()
+            self.returncode = None
+            self.pid = 456
+
+        async def wait(self):
+            while self.returncode is None:
+                await asyncio.sleep(0.001)
+            return self.returncode
+
+        def terminate(self):
+            terminated.append(True)
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr("swe_af.runtime.antigravity_adapter.shutil.which", lambda _: "agy")
+
+    async def fake_create(*args, **kwargs):
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create)
+
+    async def scenario():
+        adapter = AntigravityAdapter()
+        async def on_event(_event):
+            progress_seen.set()
+        task = asyncio.create_task(
+            adapter.harness("task", cwd=tmp_path, on_event=on_event)
+        )
+        await progress_seen.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert terminated
 
 
 def test_missing_cli_fails_closed(monkeypatch):

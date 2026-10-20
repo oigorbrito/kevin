@@ -63,6 +63,7 @@ class AntigravityAdapter:
         self.executable = executable
         self.timeout = timeout
         self._semaphore = threading.BoundedSemaphore(max_concurrency)
+        self._async_semaphore = asyncio.Semaphore(max_concurrency)
 
     def available(self) -> bool:
         return shutil.which(self.executable) is not None
@@ -82,10 +83,10 @@ class AntigravityAdapter:
         if not workspace.is_dir():
             raise ValueError("Antigravity workspace must be an existing directory")
         command = [self.executable, "--output-format", "stream-json"]
-        # Conversation continuation is passed only when the caller explicitly
-        # requests a previously documented CLI conversation identifier.
         if conversation_id:
-            command.extend(["--resume", conversation_id])
+            raise RuntimeError(
+                "Antigravity conversation resume is disabled until the installed official CLI documents its resume flag"
+            )
         started = time.monotonic()
         if not self._semaphore.acquire(timeout=timeout or self.timeout):
             raise TimeoutError("timed out waiting for an Antigravity concurrency slot")
@@ -153,13 +154,113 @@ class AntigravityAdapter:
                 pass
 
     async def harness(self, prompt: str, **options: Any) -> AntigravityResult:
-        # Keep subprocess execution and its blocking pipe reads off the event loop.
-        return await asyncio.to_thread(
-            self.run, prompt, cwd=options.get("cwd") or options.get("project_dir"),
-            timeout=options.get("timeout_seconds"),
-            on_event=options.get("on_event"),
-            conversation_id=options.get("conversation_id"),
-        )
+        """Run the CLI asynchronously, delivering progress as JSONL arrives."""
+        if not self.available():
+            raise RuntimeError(f"Antigravity CLI executable not found: {self.executable}")
+        if options.get("conversation_id"):
+            raise RuntimeError(
+                "Antigravity conversation resume is disabled until the installed official CLI documents its resume flag"
+            )
+        workspace = Path(options.get("cwd") or options.get("project_dir") or os.getcwd()).resolve()
+        if not workspace.is_dir():
+            raise ValueError("Antigravity workspace must be an existing directory")
+        command = [self.executable, "--output-format", "stream-json"]
+        timeout = options.get("timeout_seconds") or self.timeout
+        on_event = options.get("on_event")
+        started = time.monotonic()
+        async with self._async_semaphore:
+            process = await asyncio.create_subprocess_exec(
+                *command, cwd=workspace, stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                start_new_session=(os.name != "nt"),
+            )
+            events: list[dict[str, Any]] = []
+
+            async def read_events() -> None:
+                assert process.stdout is not None
+                line_number = 0
+                while line := await process.stdout.readline():
+                    line_number += 1
+                    try:
+                        event = json.loads(line)
+                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        raise ValueError(
+                            f"invalid Antigravity stream-json event on line {line_number}"
+                        ) from exc
+                    if not isinstance(event, dict):
+                        raise ValueError(
+                            f"Antigravity stream-json event on line {line_number} must be an object"
+                        )
+                    events.append(event)
+                    if on_event:
+                        callback_result = on_event(event)
+                        if asyncio.iscoroutine(callback_result):
+                            await callback_result
+
+            async def drain_stderr() -> None:
+                assert process.stderr is not None
+                while await process.stderr.read(4096):
+                    pass  # Drain to prevent child blockage; never expose diagnostics.
+
+            stdout_task = asyncio.create_task(read_events())
+            stderr_task = asyncio.create_task(drain_stderr())
+            try:
+                assert process.stdin is not None
+                process.stdin.write(prompt.encode("utf-8"))
+                await process.stdin.drain()
+                process.stdin.close()
+                await asyncio.wait_for(
+                    asyncio.gather(process.wait(), stdout_task, stderr_task),
+                    timeout=float(timeout),
+                )
+            except asyncio.TimeoutError:
+                await self._terminate_async(process)
+                stdout_task.cancel()
+                stderr_task.cancel()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                raise TimeoutError("Antigravity CLI timed out") from None
+            except (asyncio.CancelledError, ValueError):
+                await self._terminate_async(process)
+                stdout_task.cancel()
+                stderr_task.cancel()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                raise
+            finally:
+                if process.returncode is None:
+                    await self._terminate_async(process)
+            if process.returncode:
+                raise RuntimeError(f"Antigravity CLI exited with status {process.returncode}")
+            if not events:
+                raise ValueError("Antigravity CLI returned no stream-json events")
+            result_event = next(
+                (event for event in reversed(events) if event.get("type") in {"result", "final_result"}),
+                None,
+            )
+            result_text = "" if result_event is None else str(
+                result_event.get("result", result_event.get("text", ""))
+            )
+            return AntigravityResult(
+                result=result_text, parsed=result_event or {"events": events},
+                is_error=bool(result_event and result_event.get("is_error")),
+                error_message=None, failure_type="none", cost_usd=0.0,
+                num_turns=1, duration_ms=int((time.monotonic() - started) * 1000),
+                session_id=str(result_event.get("session_id", "")) if result_event else "",
+                messages=[{"role": "user", "content": prompt}], events=events,
+            )
+
+    @staticmethod
+    async def _terminate_async(process: asyncio.subprocess.Process) -> None:
+        if process.returncode is not None:
+            return
+        try:
+            if os.name == "nt":
+                process.terminate()
+            else:
+                os.killpg(process.pid, signal.SIGTERM)
+            await asyncio.wait_for(process.wait(), timeout=3)
+        except (OSError, asyncio.TimeoutError):
+            process.kill()
+            await process.wait()
 
 
 def antigravity_registration(adapter: AntigravityAdapter | None = None) -> Any:
