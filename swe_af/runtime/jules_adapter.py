@@ -230,17 +230,43 @@ class JulesHarnessAgent:
 
         adapter = JulesAdapter()
         require_plan_approval = options.get("require_plan_approval", True)
-        # Execute network creation off the asyncio event loop thread
-        session = await asyncio.to_thread(
-            adapter.create_session, prompt, require_plan_approval=require_plan_approval
-        )
-        session_id = session.get("id") or session.get("name")
+        # An explicit session_id resumes observation of an existing remote
+        # session; it must never create a second session after caller restart.
+        session_id = options.get("session_id")
+        if session_id:
+            session = {"id": str(session_id), "name": str(session_id)}
+        else:
+            create_options: Dict[str, Any] = {}
+            repository = options.get("repository")
+            branch = options.get("branch")
+            if repository:
+                owner, separator, repo = str(repository).partition("/")
+                if not separator or not owner or not repo or "/" in repo:
+                    raise ValueError("repository must use owner/repo format")
+                github_repo: Dict[str, Any] = {"owner": owner, "repo": repo}
+                create_options["sourceContext"] = {
+                    "source": {"githubRepo": github_repo}
+                }
+            if branch:
+                if not repository:
+                    raise ValueError("repository is required when branch is specified")
+                create_options["sourceContext"]["startingBranch"] = str(branch)
+            session = await asyncio.to_thread(
+                adapter.create_session, prompt,
+                require_plan_approval=require_plan_approval,
+                **create_options,
+            )
+            session_id = session.get("id") or session.get("name")
 
         # Step 1: Guarantee persistence of session identifier immediately after creation
         audit_error = None
         if session_id:
             try:
-                _persist_session_audit(str(session_id), outcome="created", log_path=self.audit_path)
+                _persist_session_audit(
+                    str(session_id),
+                    outcome="resumed" if options.get("session_id") else "created",
+                    log_path=self.audit_path,
+                )
             except Exception as exc:
                 audit_error = str(exc)
 

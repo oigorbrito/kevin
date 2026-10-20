@@ -251,6 +251,13 @@ class HarnessDispatcher:
 
 
 _AGENTFIELD_REGISTRATION = HarnessBackendRegistration(handler=_agentfield_handler)
+
+
+def agentfield_registration() -> HarnessBackendRegistration:
+    """Return the canonical AgentField registration for composed dispatchers."""
+    return _AGENTFIELD_REGISTRATION
+
+
 _DEFAULT_DISPATCHER = HarnessDispatcher(
     {DEFAULT_HARNESS_BACKEND: _AGENTFIELD_REGISTRATION}
 )
