@@ -17,6 +17,8 @@
 
 **One API call → full engineering team → shipped code.**
 
+**English** | [Português (Brasil)](README.pt-BR.md)
+
 <p>
   <a href="#quick-start">Quick Start</a> •
   <a href="#why-swe-af">Why SWE-AF</a> •
