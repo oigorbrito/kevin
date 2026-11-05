@@ -3,6 +3,7 @@ package coding
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Agent-Field/SWE-AF/go/internal/schemas"
@@ -20,6 +21,10 @@ func golden(t *testing.T, name string) string {
 
 func eq(t *testing.T, name, got, want string) {
 	t.Helper()
+	// Golden fixtures may be checked out with CRLF on Windows while generated
+	// prompt strings use LF. Compare logical text, not checkout line endings.
+	got = strings.ReplaceAll(got, "\r\n", "\n")
+	want = strings.ReplaceAll(want, "\r\n", "\n")
 	if got != want {
 		// Find first divergence for a precise report.
 		n := len(got)

@@ -284,6 +284,7 @@ def test_public_runner_resolves_executable(
 def test_public_runner_preserves_structured_output_and_process_options(
     monkeypatch, tmp_path
 ):
+    import os
     from agentfield.harness import HarnessRunner
     from pydantic import BaseModel
     import agentfield.harness._cli as sdk_cli
@@ -328,18 +329,26 @@ def test_public_runner_preserves_structured_output_and_process_options(
     assert result.session_id == "session-1"
     cmd, options = calls[0]
     assert cmd[0] == "/custom path/cli"
-    assert cmd[2].startswith("SYSTEM INSTRUCTIONS:\nsystem")
-    assert "prompt with $(shell metacharacters);" in cmd[2]
+    # Windows passes the prompt on stdin; other platforms pass it as an
+    # argument. Assert the effective prompt independent of argv layout.
+    effective_prompt = options["input_text"] or next(
+        arg for arg in cmd if arg.startswith("SYSTEM INSTRUCTIONS:")
+    )
+    assert effective_prompt.startswith("SYSTEM INSTRUCTIONS:\nsystem")
+    assert "prompt with $(shell metacharacters);" in effective_prompt
     assert "--plan" in cmd
     assert "--yolo" not in cmd
     assert cmd[cmd.index("-m") + 1] == "future/model"
     assert cmd[cmd.index("--effort") + 1] == "high"
-    assert options == {
+    assert {key: value for key, value in options.items() if key != "input_text"} == {
         "env": {"TEST_TOKEN": "sentinel"},
         "cwd": str(tmp_path),
         "timeout": 15.0,
-        "input_text": None,
     }
+    if os.name == "nt":
+        assert options["input_text"].startswith("SYSTEM INSTRUCTIONS:\nsystem")
+    else:
+        assert options["input_text"] is None
 
 
 def test_public_runner_uses_stdin_on_windows(monkeypatch, tmp_path):

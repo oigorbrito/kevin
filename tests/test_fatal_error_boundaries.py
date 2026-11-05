@@ -1,6 +1,7 @@
 """Keep new fatal signals at the provider and serialized-exception boundaries."""
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -84,6 +85,10 @@ def test_raw_auth_requires_a_complete_known_login_reply(reply):
     ))
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="The SDK ASGI background task does not exit reliably in Windows child processes.",
+)
 @pytest.mark.parametrize("fatal", [False, True])
 async def test_sdk_exception_round_trip_across_processes(fatal, tmp_path):
     """Run the SDK HTTP endpoint/callback in a child, then unwrap its JSON.

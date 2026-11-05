@@ -69,6 +69,10 @@ var goldenFastPlannerRenderedNoCtx string
 
 func assertEqual(t *testing.T, name, got, want string) {
 	t.Helper()
+	// Embedded golden files may have CRLF on Windows; prompt rendering is
+	// newline-neutral, so compare normalized logical text across platforms.
+	got = strings.ReplaceAll(got, "\r\n", "\n")
+	want = strings.ReplaceAll(want, "\r\n", "\n")
 	if got == want {
 		return
 	}

@@ -168,7 +168,10 @@ def test_round_zero_path_matches_base(tmp_path, name, build_id):
     base = tmp_path / "execution" / "iterations"
     if build_id:
         base /= build_id
-    assert _iteration_state_path(str(tmp_path), _iteration_state_key(name, 0), build_id) == str(base / f"{name}.json")
+    # Compare paths, not their platform-specific separator spelling: the
+    # returned path may contain forward slashes on Windows, which are valid
+    # separators but differ from pathlib's normalized string representation.
+    assert Path(_iteration_state_path(str(tmp_path), _iteration_state_key(name, 0), build_id)) == base / f"{name}.json"
 
 
 @pytest.mark.parametrize("name", ["parent", "parent.r1", "parent%2Er1", "advisor-rounds", ".", ".."])
