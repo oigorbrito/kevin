@@ -41,10 +41,10 @@ services:
       - PORT=8003
       - AGENT_CALLBACK_URL=http://swe-agent:8003
       - SWE_HARNESS_BACKEND=${SWE_HARNESS_BACKEND-agentfield}
-      # Empty = auto: open_code when only an OpenRouter or Infron key is
-      # present, else claude_code. A baked claude_code fallback here would
-      # break gateway-only deployments.
+      # Empty = auto: aforge with OpenRouter, open_code with only Infron,
+      # else claude_code. Explicit runtime overrides always win.
       - SWE_DEFAULT_RUNTIME=${SWE_DEFAULT_RUNTIME:-}
+      - AGENTFIELD_AFORGE_COMMAND=${AGENTFIELD_AFORGE_COMMAND:-exec}
       - SWE_DEFAULT_MODEL=${SWE_DEFAULT_MODEL:-}
       - SWE_GEMINI_MODEL=${SWE_GEMINI_MODEL:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
@@ -94,9 +94,9 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENCODE_MODEL=${OPENCODE_MODEL:-}
-      # Empty = auto: open_code when only an OpenRouter or Infron key is
-      # present, else claude_code (see swe-agent note).
+      # Fast path: aforge with OpenRouter, else claude_code.
       - SWE_DEFAULT_RUNTIME=${SWE_DEFAULT_RUNTIME:-}
+      - AGENTFIELD_AFORGE_COMMAND=${AGENTFIELD_AFORGE_COMMAND:-exec}
       - SWE_DEFAULT_MODEL=${SWE_DEFAULT_MODEL:-}
       - SWE_GEMINI_MODEL=${SWE_GEMINI_MODEL:-}
       - HARNESS_MODEL=${HARNESS_MODEL:-openrouter/deepseek/deepseek-v4-flash-0731}

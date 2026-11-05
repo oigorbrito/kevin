@@ -1,4 +1,55 @@
+# ---------------------------------------------------------------------------
+# Stage 1 — aforge: fetch the released AForge CLI from the public download host
+# and verify it against the release checksums before it ever enters the image.
+#
+# The release publishes GZIPPED binaries plus a checksums.txt whose hashes are
+# of the DECOMPRESSED binaries, so this stage gunzips first and then rewrites
+# the matching checksum line to the local file name before `sha256sum -c`.
+#
+# Both ARGs are overridable so a mirror / air-gapped registry can be used:
+#   docker build --build-arg AFORGE_BASE_URL=... --build-arg AFORGE_VERSION=...
+# Changing AFORGE_VERSION also busts this layer's cache (per the docker cache
+# rule) — a floating URL alone would keep restoring a stale binary.
+# ---------------------------------------------------------------------------
+ARG AFORGE_BASE_URL=https://agentfield.ai/downloads/aforge
+ARG AFORGE_VERSION=v0.1.0
+
+FROM debian:bookworm-slim AS aforge
+ARG AFORGE_BASE_URL
+ARG AFORGE_VERSION
+# TARGETARCH is populated by BuildKit; the fallback keeps the classic builder
+# working on the only architecture this image is published for.
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /out
+RUN set -eu; \
+    arch="${TARGETARCH:-amd64}"; \
+    curl -fsSL "${AFORGE_BASE_URL}/${AFORGE_VERSION}/aforge-linux-${arch}.gz" -o aforge.gz; \
+    gunzip -c aforge.gz > aforge; \
+    curl -fsSL "${AFORGE_BASE_URL}/${AFORGE_VERSION}/checksums.txt" -o checksums.txt; \
+    grep " aforge-linux-${arch}$" checksums.txt | sed 's/  aforge-linux-.*/  aforge/' > aforge.sha256; \
+    test -s aforge.sha256; \
+    sha256sum -c aforge.sha256; \
+    chmod +x aforge; \
+    ./aforge --help > /dev/null; \
+    rm -f aforge.gz checksums.txt aforge.sha256
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — Node 22 tooling; stage 3 — the SWE-AF Python node.
+# ---------------------------------------------------------------------------
+FROM node:22-bookworm-slim AS node
 FROM python:3.12-slim
+
+# Use the official Node 22 distribution, including npm. Debian's nodejs
+# package can be too old for Command Code (which requires Node >=22).
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s node /usr/local/bin/nodejs && \
+    ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -8,7 +59,7 @@ WORKDIR /app
 # System deps: git (worktrees, branches), curl (healthcheck), jq (agent bash),
 # openssh-client (optional SSH git), gh CLI (draft PRs)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl openssh-client jq nodejs npm && \
+    git curl ca-certificates openssh-client jq libstdc++6 libatomic1 && \
     # Install GitHub CLI
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
@@ -19,6 +70,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl -fsSL https://opencode.ai/install | bash && \
     # Install Codex CLI for codex runtime provider
     npm install -g @openai/codex && \
+    # Install Command Code CLI for command_code runtime provider
+    npm install -g command-code@1.82.2 && \
+    # Credential-free startup check: fail the build on incompatible Node/CLI.
+    command-code --version && \
     codex_path="$(command -v codex)" && \
     mv "${codex_path}" /usr/local/bin/codex-real && \
     printf '%s\n' \
@@ -52,6 +107,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Add OpenCode to PATH for non-interactive shells
 ENV PATH="/root/.opencode/bin:${PATH}"
+# AForge CLI (aforge runtime), fetched + checksum-verified in stage 1.
+COPY --from=aforge /out/aforge /usr/local/bin/aforge
+# Stay on aforge on purpose until this product's separate CodeAF migration.
+ENV AFORGE_BIN=/usr/local/bin/aforge
 
 # Tell OpenCode to read its model AND small_model from the deployer's
 # HARNESS_MODEL env var via {env:...} interpolation. Without this config,
@@ -105,7 +164,8 @@ EXPOSE 8003
 
 ENV PORT=8003 \
     AGENTFIELD_SERVER=http://control-plane:8080 \
-    NODE_ID=swe-planner
+    NODE_ID=swe-planner \
+    AGENTFIELD_AFORGE_COMMAND=exec
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1

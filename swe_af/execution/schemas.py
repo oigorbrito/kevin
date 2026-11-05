@@ -232,6 +232,8 @@ class SplitIssueSpec(BaseModel):
     files_to_create: list[str] = []
     files_to_modify: list[str] = []
     parent_issue_name: str = ""
+    # Optional; inherits the parent issue's guidance when omitted.
+    guidance: dict[str, Any] | None = None
 
     @field_validator(
         "acceptance_criteria", "depends_on", "provides",
@@ -621,6 +623,9 @@ _OPENROUTER_AUTO_DEFAULT_MODEL = "openrouter/deepseek/deepseek-v4-flash-0731"
 _INFRON_AUTO_DEFAULT_MODEL = "infron/deepseek/deepseek-v4-flash-0731"
 
 _RUNTIME_BASE_MODELS: dict[str, dict[str, str]] = {
+    "aforge": {
+        **{field: _OPENROUTER_AUTO_DEFAULT_MODEL for field in ALL_MODEL_FIELDS},
+    },
     "claude_code": {
         **{field: "sonnet" for field in ALL_MODEL_FIELDS},
         "qa_synthesizer_model": "haiku",
@@ -630,6 +635,13 @@ _RUNTIME_BASE_MODELS: dict[str, dict[str, str]] = {
     },
     "codex": {
         **{field: _CODEX_API_KEY_MODEL for field in ALL_MODEL_FIELDS},
+    },
+    # Command Code: deliberately no baked-in model ids. A blank model makes the
+    # provider omit `-m`, so Command Code uses its own configured default, and
+    # every model it supports now or adds later works without a SWE-AF change.
+    # Callers override per role via models / SWE_DEFAULT_MODEL.
+    "command_code": {
+        **{field: "" for field in ALL_MODEL_FIELDS},
     },
 }
 
@@ -661,23 +673,19 @@ def _codex_default_model() -> str:
     return _CODEX_CHATGPT_MODEL if _codex_uses_chatgpt_auth() else _CODEX_API_KEY_MODEL
 
 
-def _runtime_to_provider(runtime: str) -> Literal["claude", "opencode", "codex"]:
+def _runtime_to_provider(runtime: str) -> Literal["aforge", "claude", "opencode", "codex", "command_code"]:
     return runtime_to_harness_provider(runtime)  # type: ignore[return-value]
 
 
 def _openrouter_only_env() -> bool:
     """Whether the deployer implicitly chose the OpenRouter runtime.
 
-    True when no explicit ``SWE_DEFAULT_RUNTIME`` is set, no Anthropic key is
-    present, but an ``OPENROUTER_API_KEY`` is — i.e. the user "went with
-    OpenRouter" without spelling out a runtime. In that case SWE-AF defaults to
-    the ``open_code`` runtime and to ``_OPENROUTER_AUTO_DEFAULT_MODEL``. Setting
-    ``SWE_DEFAULT_RUNTIME`` (to anything) opts out and preserves the explicit
+    True when no explicit ``SWE_DEFAULT_RUNTIME`` is set and an
+    ``OPENROUTER_API_KEY`` is present. In that case SWE-AF defaults to AForge;
+    setting ``SWE_DEFAULT_RUNTIME`` opts out and preserves the explicit
     runtime's own defaults.
     """
     if os.getenv("SWE_DEFAULT_RUNTIME", "").strip():
-        return False
-    if os.getenv("ANTHROPIC_API_KEY", "").strip():
         return False
     return bool(os.getenv("OPENROUTER_API_KEY", "").strip())
 
@@ -701,19 +709,20 @@ def _infron_only_env() -> bool:
     return bool(os.getenv("INFRON_API_KEY", "").strip())
 
 
-def _default_runtime() -> Literal["claude_code", "open_code", "codex"]:
+def _default_runtime() -> Literal["aforge", "claude_code", "open_code", "codex", "command_code"]:
     """Default runtime, honoring the ``SWE_DEFAULT_RUNTIME`` env var.
 
     Lets the deployer pick the runtime without every caller having to pass
-    a config. When ``SWE_DEFAULT_RUNTIME`` is unset, auto-selects ``open_code``
-    if only an OpenRouter or Infron key is present (see
-    ``_openrouter_only_env`` and ``_infron_only_env``), otherwise
-    ``claude_code``. Logs and falls back to ``claude_code`` when the env value
-    isn't a valid runtime.
+    a config. When ``SWE_DEFAULT_RUNTIME`` is unset, auto-selects ``aforge``
+    with an OpenRouter key, ``open_code`` with only an Infron key, otherwise
+    ``claude_code`` (see ``_openrouter_only_env`` and ``_infron_only_env``).
+    Logs and falls back to ``claude_code`` when the env value is invalid.
     """
     value = os.getenv("SWE_DEFAULT_RUNTIME", "").strip()
     if not value:
-        if _openrouter_only_env() or _infron_only_env():
+        if _openrouter_only_env():
+            return "aforge"
+        if _infron_only_env():
             return "open_code"
         return "claude_code"
     if value in RUNTIME_VALUES:
@@ -820,10 +829,12 @@ def _default_planning_model(runtime: str | None = None) -> str:
         2. deployer env (``SWE_DEFAULT_MODEL`` → ``AI_MODEL`` →
            ``HARNESS_MODEL``, the latter only on ``open_code``)
         3. the runtime's own auto/base default:
+             - ``aforge``      → the OpenRouter DeepSeek default
              - ``codex``       → a codex-native model (never ``openrouter/…``)
              - ``open_code``   → the OpenRouter auto default (OpenRouter-only
                                  env) or the ``open_code`` base default
              - ``claude_code`` → the Claude ``sonnet`` alias (historical default)
+             - ``command_code`` → blank; use the CLI default (Python node only)
 
     Env / explicit values (layers 1–2) still win verbatim — the deployer owns
     them — so only the auto default (layer 3) is made runtime-aware.
@@ -973,7 +984,7 @@ class BuildConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    runtime: Literal["claude_code", "open_code", "codex"] = Field(default_factory=_default_runtime)
+    runtime: Literal["aforge", "claude_code", "open_code", "codex", "command_code"] = Field(default_factory=_default_runtime)
     models: dict[str, str] | None = None
 
     max_review_iterations: int = 2
@@ -1092,7 +1103,7 @@ class BuildConfig(BaseModel):
         _validate_flat_models(self.models)
 
     @property
-    def ai_provider(self) -> Literal["claude", "opencode", "codex"]:
+    def ai_provider(self) -> Literal["aforge", "claude", "opencode", "codex", "command_code"]:
         return _runtime_to_provider(self.runtime)
 
     @property
@@ -1282,7 +1293,7 @@ class ExecutionConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    runtime: Literal["claude_code", "open_code", "codex"] = Field(default_factory=_default_runtime)
+    runtime: Literal["aforge", "claude_code", "open_code", "codex", "command_code"] = Field(default_factory=_default_runtime)
     models: dict[str, str] | None = None
     _resolved_models: dict[str, str] = PrivateAttr(default_factory=dict)
 
@@ -1334,7 +1345,7 @@ class ExecutionConfig(BaseModel):
         return self._resolved_models[field_name]
 
     @property
-    def ai_provider(self) -> Literal["claude", "opencode", "codex"]:
+    def ai_provider(self) -> Literal["aforge", "claude", "opencode", "codex", "command_code"]:
         return _runtime_to_provider(self.runtime)
 
     @property

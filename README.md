@@ -206,10 +206,12 @@ Most agent frameworks wrap a single coder loop. SWE-AF is a coordinated engineer
 
 </details>
 
-**Claude, open-source, and Codex models supported**: Run builds with any runtime and tune models per role in one flat config map.
+**AForge, Claude, OpenCode, Codex, and Command Code runtimes supported**: Run builds with any runtime and tune models per role in one flat config map.
+- `runtime: "aforge"` maps to AForge exec and is the default when an OpenRouter key is present without a runtime override.
 - `runtime: "claude_code"` maps to Claude backend.
 - `runtime: "open_code"` maps to OpenCode backend (OpenRouter/OpenAI/Google/Anthropic model IDs).
 - `runtime: "codex"` maps to the OpenAI Codex CLI backend.
+- `runtime: "command_code"` maps to the Command Code CLI backend (`command-code -p`, headless) on the Python node. No model ids are baked in: without `models`, Command Code's own default model is used, and any id it supports passes through verbatim. The Go node does not support this runtime.
 
 ## Adaptive Factory Control
 
@@ -248,7 +250,7 @@ New to AgentField? Install the control plane first with `curl -fsSL https://agen
 
 One click deploys SWE-AF + AgentField control plane + PostgreSQL. Exactly **one** environment variable is required in Railway — an LLM provider key:
 
-- `OPENROUTER_API_KEY` — **recommended, simplest**. One key, 200+ open and proprietary models. With only this set (no `ANTHROPIC_API_KEY`, no `SWE_DEFAULT_RUNTIME`), SWE-AF auto-selects the `open_code` runtime and defaults every role to `openrouter/deepseek/deepseek-v4-flash-0731` — no further configuration needed.
+- `OPENROUTER_API_KEY` — **recommended, simplest**. One key, 200+ open and proprietary models. When present and no runtime is explicitly selected, SWE-AF uses AForge `exec` and defaults every role to `openrouter/deepseek/deepseek-v4-flash-0731`.
 - *Alternative:* `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` in [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (uses Pro/Max subscription credits), to run the `claude_code` runtime instead.
 
 Optional:
@@ -281,6 +283,43 @@ python -m pip install -e ".[dev]"
 
 ### 3. Run
 
+#### Harness selection
+
+The Docker image ships AForge: a dedicated build stage downloads the released
+binary from `https://agentfield.ai/downloads/aforge/<version>/` and verifies it
+against the release `checksums.txt` before it enters the image. Both
+coordinates are build args, so a mirror or a different release can be
+substituted without editing the Dockerfile:
+
+```bash
+docker build \
+  --build-arg AFORGE_BASE_URL=https://agentfield.ai/downloads/aforge \
+  --build-arg AFORGE_VERSION=v0.1.0 \
+  -t swe-af .
+```
+
+`AFORGE_VERSION` is part of that layer's cache key — bumping it is what pulls a
+newer AForge; a floating URL alone would keep restoring the cached binary.
+
+A host installation needs `aforge` on `PATH` instead:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-...
+export SWE_DEFAULT_RUNTIME=aforge
+export SWE_DEFAULT_MODEL=openrouter/deepseek/deepseek-v4-flash-0731
+python -m swe_af
+```
+
+Set `SWE_DEFAULT_RUNTIME=open_code` for an OpenCode rollback (OpenCode stays
+installed in the image), or `claude_code` for Claude.
+
+> `AFORGE_BIN` and `AGENTFIELD_AFORGE_COMMAND` are honored on the pinned
+> `agentfield>=0.1.130` SDK, which carries
+> [agentfield#905](https://github.com/Agent-Field/agentfield/pull/905):
+> `AFORGE_BIN` overrides the binary otherwise resolved as `aforge` from `PATH`,
+> and `AGENTFIELD_AFORGE_COMMAND` picks the headless command (`exec`, the
+> default, or `do`) — `aforge exec --json -w <root> --timeout <seconds>`.
+
 ```bash
 af                 # starts AgentField control plane on :8080
 python -m swe_af   # registers node id "swe-planner"
@@ -289,7 +328,7 @@ python -m swe_af   # registers node id "swe-planner"
 ### 4. Trigger a build
 
 ```bash
-# Default (uses Claude)
+# Default (AForge with OpenRouter; otherwise follows deployment configuration)
 curl -X POST http://localhost:8080/api/v1/execute/async/swe-planner.build \
   -H "Content-Type: application/json" \
   -d @- <<'JSON'
@@ -385,7 +424,7 @@ For Infron with `open_code`, set `INFRON_API_KEY` and use `infron/<provider>/<mo
 SWE_DEFAULT_MODEL=infron/moonshotai/kimi-k2.6
 ```
 
-With **only** an `INFRON_API_KEY` set (no `ANTHROPIC_API_KEY`, no other gateway key, no `SWE_DEFAULT_RUNTIME`), SWE-AF auto-selects the `open_code` runtime and defaults to `infron/deepseek/deepseek-v4-flash-0731` — the same rule the existing gateway path already follows. A gateway key already configured keeps precedence, so adding an Infron key never reroutes an existing deployment on its own.
+With **only** an `INFRON_API_KEY` set (no `ANTHROPIC_API_KEY`, no other gateway key, no `SWE_DEFAULT_RUNTIME`), the main build/execute/issue/planning paths auto-select the `open_code` runtime and default to `infron/deepseek/deepseek-v4-flash-0731`. Fast mode retains its Claude fallback without OpenRouter; select `SWE_DEFAULT_RUNTIME=open_code` explicitly for fast Infron builds. A gateway key already configured keeps precedence, so adding an Infron key never reroutes an existing deployment on its own.
 
 > Docker and Railway deployments using Infron must set `HARNESS_MODEL=infron/deepseek/deepseek-v4-flash-0731` (or another `infron/...` id) in the environment. The image bakes an `openrouter/...` value that the `open_code` model cascade reads after the Infron auto default and would otherwise override it. `SWE_DEFAULT_MODEL` pins every role model but does not feed OpenCode's `small_model`; set `HARNESS_MODEL` for that path (setting both is fine).
 
@@ -413,29 +452,35 @@ A separate OpenCode model alias `google-gemini-mock/gemini-mock-model` points on
 
 ### MiniMax direct providers
 
-The Docker images include direct MiniMax provider entries for both supported regions and API compatibility modes. `MiniMax-M3` and `MiniMax-M2.7` are available in every entry.
+The Docker images include direct MiniMax provider entries for both supported regions and API compatibility modes. Every entry lists `MiniMax-M3.1-Flash` first, followed by `MiniMax-M3`. Set the model explicitly with the environment variables below; existing runtime and per-role overrides still apply.
 
 | Region | OpenAI-compatible `open_code` model IDs | Anthropic-compatible `open_code` model IDs | Anthropic base URL |
 |---|---|---|---|
-| Global | `minimax-global-openai/MiniMax-M3`, `minimax-global-openai/MiniMax-M2.7` | `minimax-anthropic/MiniMax-M3`, `minimax-anthropic/MiniMax-M2.7` | `https://api.minimax.io/anthropic` |
-| China | `minimax-cn-openai/MiniMax-M3`, `minimax-cn-openai/MiniMax-M2.7` | `minimax-anthropic/MiniMax-M3`, `minimax-anthropic/MiniMax-M2.7` | `https://api.minimaxi.com/anthropic` |
+| Global | `minimax-global-openai/MiniMax-M3.1-Flash`, `minimax-global-openai/MiniMax-M3` | `minimax-anthropic/MiniMax-M3.1-Flash`, `minimax-anthropic/MiniMax-M3` | `https://api.minimax.io/anthropic` |
+| China | `minimax-cn-openai/MiniMax-M3.1-Flash`, `minimax-cn-openai/MiniMax-M3` | `minimax-anthropic/MiniMax-M3.1-Flash`, `minimax-anthropic/MiniMax-M3` | `https://api.minimaxi.com/anthropic` |
 
-| Model | Context window | Input modalities | Thinking | Input / output / cache read / cache write per million tokens |
-|---|---:|---|---|---|
-| `MiniMax-M3` | 1,000,000 | text, image, video | adaptive or disabled | $0.30 / $1.20 / $0.06 / not charged |
-| `MiniMax-M2.7` | 204,800 | text | always on | $0.30 / $1.20 / $0.06 / $0.375 |
+| Model | Context window | Maximum output | Input modalities | Thinking | Input / output / cache read per million tokens |
+|---|---:|---:|---|---|---|
+| `MiniMax-M3.1-Flash` | 1,000,000 | 524,288 | text, image, video | always adaptive | $0.15 / $0.60 / $0.015 |
+| `MiniMax-M3` | 1,000,000 | 524,288 | text, image, video | adaptive or disabled | $0.30 / $1.20 / $0.06 |
 
-`MiniMax-M3` pricing is tiered by input length: requests over 512K input tokens are billed at $0.60 / $2.40 / $0.12 instead. The baked provider metadata uses the standard ≤512K tier, which is what normal coding requests hit.
+`MiniMax-M3` Standard pricing is tiered by input length: requests over 512K input tokens are billed at $0.60 / $2.40 / $0.12 instead. Priority pricing is 1.5× Standard. The flat provider metadata represents only the Standard ≤512K tier. Cache-write pricing is unspecified and omitted. See the [official pricing](https://platform.minimax.io/docs/pricing/overview).
+
+Flash thinking is always adaptive. Its OpenCode presets disable the inherited `none` and `thinking` variants and expose `low`, `medium`, `high`, `xhigh`, and `max` effort instead, with `max` as the default. The OpenAI-compatible adapter sends `reasoning_effort`; the Anthropic-compatible adapter sends `output_config.effort`. M3 retains OpenCode's existing adaptive/disabled variants without effort settings. Although M3's Anthropic API defaults to disabled thinking, OpenCode enables adaptive thinking by default. No service-tier setting is sent.
+
+The Infron catalog retains its existing `minimax/minimax-m3` route and removes the older M2.5 option. Flash is offered through the direct profiles above; no unverified gateway route is added.
 
 For the direct OpenAI-compatible path, set `MINIMAX_API_KEY`, use `runtime: "open_code"`, and select one of the `minimax-global-openai/*` or `minimax-cn-openai/*` model IDs above. The configured OpenAI-compatible base URLs are `https://api.minimax.io/v1` and `https://api.minimaxi.com/v1`.
 
-For the Anthropic-compatible OpenCode path, set `MINIMAX_API_KEY`, set `ANTHROPIC_BASE_URL` to either regional `/anthropic` URL shown above, use `runtime: "open_code"`, and select `minimax-anthropic/MiniMax-M3` or `minimax-anthropic/MiniMax-M2.7`. The provider configuration appends `/v1`; keep `ANTHROPIC_BASE_URL` at the regional `/anthropic` URL.
+For the Anthropic-compatible OpenCode path, set `MINIMAX_API_KEY`, set `ANTHROPIC_BASE_URL` to either regional `/anthropic` URL shown above, use `runtime: "open_code"`, and select `minimax-anthropic/MiniMax-M3.1-Flash` or `minimax-anthropic/MiniMax-M3`. The provider configuration appends `/v1`; keep `ANTHROPIC_BASE_URL` at the regional `/anthropic` URL.
 
-For the Anthropic-compatible Claude path, set `ANTHROPIC_AUTH_TOKEN`, set `ANTHROPIC_BASE_URL` to the regional `/anthropic` URL shown above, use `runtime: "claude_code"`, and select `MiniMax-M3` or `MiniMax-M2.7`. Do not append `/v1`; Claude Code adds `/v1/messages` to the configured base URL. Unset `ANTHROPIC_API_KEY` (and `CLAUDE_CODE_OAUTH_TOKEN`) in that deployment — an Anthropic credential left in the environment can be sent to the non-Anthropic endpoint.
+For the Anthropic-compatible Claude path, set `ANTHROPIC_AUTH_TOKEN`, set `ANTHROPIC_BASE_URL` to the regional `/anthropic` URL shown above, use `runtime: "claude_code"`, and select `MiniMax-M3.1-Flash` or `MiniMax-M3`. Do not append `/v1`; Claude Code adds `/v1/messages` to the configured base URL. Unset `ANTHROPIC_API_KEY` (and `CLAUDE_CODE_OAUTH_TOKEN`) in that deployment — an Anthropic credential left in the environment can be sent to the non-Anthropic endpoint.
 
 `ANTHROPIC_BASE_URL` is process-wide, so one deployment cannot route Claude and MiniMax Anthropic-compatible traffic to different endpoints.
 
 For Codex with ChatGPT subscription auth, install the Codex CLI on the host, run `codex login`, leave `OPENAI_API_KEY` unset for this process, and set `SWE_CODEX_AUTH_MODE=chatgpt` or `auto`. For OpenAI API-platform billing, set `SWE_CODEX_AUTH_MODE=api_key` and `OPENAI_API_KEY`.
+
+For Command Code on the Python node, install Node 22+ and `npm install -g command-code@1.82.2`, run `command-code login`, and set `runtime: "command_code"`. To share that login with Docker, use `docker compose -f docker-compose.yml -f docker-compose.commandcode.yml up -d` (for the host control plane, use `docker-compose.local.yml` with `docker-compose.commandcode.local.yml`). These opt-in overlays mount only `~/.commandcode/auth.json`, read-only; the file must already exist. Session history and configuration remain in the container. See [deployment notes](docs/deployment.md) for credential access and BYOK configuration.
 
 > The Docker image bakes `HARNESS_MODEL=openrouter/deepseek/deepseek-v4-flash-0731` so OpenCode's `small_model` config interpolation always has a value. `HARNESS_MODEL` only affects the `open_code` runtime — `claude_code` and `codex` deployments resolve their own runtime defaults (codex picks its model by auth mode) and can override per role via `SWE_DEFAULT_MODEL` / `models` as usual.
 
@@ -578,10 +623,17 @@ cp .env.example .env
 docker compose up -d
 ```
 
-> `.env.example` ships with **every** provider key commented out — uncomment
-> exactly one. In particular, don't leave a placeholder `ANTHROPIC_API_KEY`
-> value in place: any non-empty value forces the `claude_code` runtime and
-> breaks an OpenRouter-only setup.
+> `.env.example` ships with every provider key commented out. With a nonblank
+> `OPENROUTER_API_KEY` and no explicit runtime, both nodes now select `aforge`,
+> even alongside Anthropic credentials (API key, OAuth/subscription, or a custom
+> Anthropic endpoint). Existing deployments can therefore change harness,
+> model family, and billing provider on upgrade. Set `SWE_DEFAULT_RUNTIME=claude_code`
+> to retain Claude or `SWE_DEFAULT_RUNTIME=open_code` to retain OpenCode.
+> Request `config.runtime` overrides the deployment setting. Explicit model
+> settings still win, so check that they are compatible with the selected runtime.
+> Host/package installs also need the AForge CLI on `PATH` (or `AFORGE_BIN`);
+> the Docker and Railway images include it. Command Code is Python-only and
+> always requires an explicit runtime choice.
 
 Submit a build:
 
@@ -878,7 +930,7 @@ Pass `config` to `build` or `execute`. Full schema: [`swe_af/execution/schemas.p
 
 | Key                       | Default         | Description                                           |
 | ------------------------- | --------------- | ----------------------------------------------------- |
-| `runtime`                 | `"claude_code"` | Model runtime: `"claude_code"`, `"open_code"`, or `"codex"`. The default also honors the `SWE_DEFAULT_RUNTIME` env var when no `runtime` is passed in `config` — set it on the deployment so callers don't need to plumb a config through. |
+| `runtime`                 | auto | Model runtime: `"aforge"`, `"claude_code"`, `"open_code"`, `"codex"`, or `"command_code"` (Python only, explicit opt-in). With OpenRouter available the default is `"aforge"`; with only Infron it is `"open_code"` on the main path; otherwise it is `"claude_code"`. `SWE_DEFAULT_RUNTIME` overrides it deployment-wide; request `runtime` wins over that. |
 | `models`                  | `null`          | Flat role-model map (`default` + role keys below). Without a caller-supplied value, the `SWE_DEFAULT_MODEL` env var is used as the default for all roles — set it on the deployment to pin a model without code changes. Caller `models.default` or per-role keys still win. |
 | `max_coding_iterations`   | `5`             | Inner-loop retry budget                               |
 | `max_advisor_invocations` | `2`             | Middle-loop advisor budget                            |
@@ -958,10 +1010,21 @@ Fully customized:
 
 ```text
 .artifacts/
-├── plan/           # PRD, architecture, issue specs
+├── plan/           # PRD, architecture, issue specs, planning retry logs
 ├── execution/      # checkpoints, per-issue logs, agent outputs
 └── verification/   # acceptance criteria results
 ```
+
+Planning diagnostics are appended to `plan/<stage>_raw_response.txt` for
+`product_manager`, `architect`, `tech_lead`, and `sprint_planner`. Each invocation
+has a run header with a process-local section counter, so repeated calls from
+the same process within the same second can be distinguished. Failed schema
+attempts include bounded raw output; the terminal `===== outcome: ... =====`
+entry is kept on one physical line even when an error is multiline. Artifact
+writes are best-effort.
+Scout-negotiated credentials are redacted, including common JSON and URL
+encodings, but this is not a general-purpose secret scrubber: review logs before
+sharing them.
 
 </details>
 
@@ -1028,6 +1091,22 @@ keeps using the classic loop, so the flag is safe to leave on.
 Tuning knobs (`SWE_PRO_VARIANT`, `SWE_PRO_MAX_COST`, `SWE_PRO_PUBLIC_URL`)
 and the full env surface are documented in
 [`go/docs/pro-engine.md`](go/docs/pro-engine.md).
+
+---
+
+## New from AgentField: CodeAF
+
+<a href="https://agentfield.ai/github/codeaf/?utm_source=github-readme&utm_campaign=swe-af-readme&utm_id=swe-af-readme-codeaf-repo">
+  <img src="https://raw.githubusercontent.com/Agent-Field/CodeAF/dev/assets/readme/benchmark-deepswe.webp" alt="First on DeepSWE: senior-dev, CodeAF's developer subharness, solved the most tasks (54.9%) at the lowest cost per solved task (1x). Every other harness solved less and paid more per solve: mini-swe-agent 1.9x, codex 2.1x, pi 2.4x, claude-code 3.4x, omp, kilo and opencode about 4.5x, muse-code 11.3x, deepseek-harness 26.6x." width="100%">
+</a>
+
+**[CodeAF](https://agentfield.ai/github/codeaf/?utm_source=github-readme&utm_campaign=swe-af-readme&utm_id=swe-af-readme-codeaf-repo)** is our new open-source coding harness,
+built for open models: frontier-grade coding at a fraction of the cost. It ranked
+**#1 on DeepSWE** out of ten coding harnesses on the same model (DeepSeek V4 Flash),
+ahead of Claude Code, Codex and OpenCode, at the lowest cost per solved issue.
+One Go binary, Apache 2.0.
+
+[Try CodeAF →](https://agentfield.ai/github/codeaf/?utm_source=github-readme&utm_campaign=swe-af-readme&utm_id=swe-af-readme-codeaf-repo) · [See the benchmark →](https://agentfield.ai/github/codeaf/?utm_source=github-readme&utm_campaign=swe-af-readme&utm_id=swe-af-readme-codeaf-benchmark#benchmarks)
 
 ---
 

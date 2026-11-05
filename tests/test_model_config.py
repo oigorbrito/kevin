@@ -92,6 +92,11 @@ class TestResolveRuntimeModels(unittest.TestCase):
         for field in ALL_MODEL_FIELDS:
             self.assertEqual(resolved[field], "openrouter/deepseek/deepseek-v4-flash-0731")
 
+    def test_aforge_defaults(self) -> None:
+        resolved = resolve_runtime_models(runtime="aforge", models=None)
+        for field in ALL_MODEL_FIELDS:
+            self.assertEqual(resolved[field], "openrouter/deepseek/deepseek-v4-flash-0731")
+
     def test_models_default_applies_to_all(self) -> None:
         resolved = resolve_runtime_models(
             runtime="claude_code",
@@ -129,6 +134,14 @@ class TestBuildConfig(unittest.TestCase):
             self.assertEqual(cfg.ai_provider, "opencode")
             resolved = cfg.resolved_models()
         self.assertEqual(resolved["coder_model"], "openrouter/deepseek/deepseek-v4-flash-0731")
+
+    def test_aforge_runtime_provider(self) -> None:
+        cfg = BuildConfig(runtime="aforge")
+        self.assertEqual(cfg.ai_provider, "aforge")
+        self.assertEqual(
+            cfg.resolved_models()["coder_model"],
+            "openrouter/deepseek/deepseek-v4-flash-0731",
+        )
 
 
 class TestGeminiRuntimeSelection(unittest.TestCase):
@@ -228,21 +241,21 @@ class TestInfronAutoSelection(unittest.TestCase):
 
 
 class TestOpenRouterAutoSelection(unittest.TestCase):
-    """When only an OpenRouter key is present (no explicit runtime), SWE-AF
-    auto-selects the open_code runtime and defaults to DeepSeek."""
+    """When an OpenRouter key is present (no explicit runtime), SWE-AF
+    auto-selects the aforge runtime and defaults to DeepSeek — including when
+    an Anthropic key is also set."""
 
-    def test_openrouter_only_auto_selects_open_code(self) -> None:
+    def test_openrouter_auto_selects_aforge(self) -> None:
         with _provider_env(OPENROUTER_API_KEY="sk-or-x"):
-            self.assertEqual(_default_runtime(), "open_code")
+            self.assertEqual(_default_runtime(), "aforge")
 
     def test_anthropic_key_keeps_claude_code(self) -> None:
         with _provider_env(ANTHROPIC_API_KEY="sk-ant"):
             self.assertEqual(_default_runtime(), "claude_code")
 
-    def test_both_keys_keep_claude_code(self) -> None:
-        # Anthropic present → claude_code even if OpenRouter is also set.
+    def test_openrouter_wins_when_both_keys_are_present(self) -> None:
         with _provider_env(ANTHROPIC_API_KEY="sk-ant", OPENROUTER_API_KEY="sk-or"):
-            self.assertEqual(_default_runtime(), "claude_code")
+            self.assertEqual(_default_runtime(), "aforge")
 
     def test_no_keys_default_claude_code(self) -> None:
         with _provider_env():
@@ -255,7 +268,7 @@ class TestOpenRouterAutoSelection(unittest.TestCase):
 
     def test_auto_openrouter_defaults_to_deepseek(self) -> None:
         with _provider_env(OPENROUTER_API_KEY="sk-or"):
-            resolved = resolve_runtime_models(runtime="open_code", models=None)
+            resolved = resolve_runtime_models(runtime="aforge", models=None)
         for field in ALL_MODEL_FIELDS:
             self.assertEqual(resolved[field], "openrouter/deepseek/deepseek-v4-flash-0731")
 
@@ -277,7 +290,7 @@ class TestOpenRouterAutoSelection(unittest.TestCase):
     def test_build_config_auto_openrouter_end_to_end(self) -> None:
         with _provider_env(OPENROUTER_API_KEY="sk-or"):
             cfg = BuildConfig()
-            self.assertEqual(cfg.runtime, "open_code")
+            self.assertEqual(cfg.runtime, "aforge")
             resolved = cfg.resolved_models()
         self.assertEqual(resolved["coder_model"], "openrouter/deepseek/deepseek-v4-flash-0731")
 
@@ -692,6 +705,8 @@ class TestRuntimeProviderMapping(unittest.TestCase):
         self.assertEqual(runtime_to_harness_adapter("open_code"), "opencode")
         self.assertEqual(runtime_to_harness_adapter("opencode"), "opencode")
         self.assertEqual(runtime_to_harness_adapter("codex"), "codex")
+        self.assertEqual(runtime_to_harness_adapter("command_code"), "command-code")
+        self.assertEqual(runtime_to_harness_adapter("cmd"), "command-code")
 
     def test_runtime_to_harness_provider_maps_all_supported_runtimes(self) -> None:
         from swe_af.runtime.providers import runtime_to_harness_provider
@@ -699,12 +714,50 @@ class TestRuntimeProviderMapping(unittest.TestCase):
         self.assertEqual(runtime_to_harness_provider("claude_code"), "claude")
         self.assertEqual(runtime_to_harness_provider("open_code"), "opencode")
         self.assertEqual(runtime_to_harness_provider("codex"), "codex")
+        self.assertEqual(runtime_to_harness_provider("command_code"), "command_code")
 
     def test_unknown_runtime_provider_raises(self) -> None:
         from swe_af.runtime.providers import normalize_runtime_provider
 
         with self.assertRaises(ValueError):
             normalize_runtime_provider("bad_runtime")
+
+
+class TestCommandCodeConfig(unittest.TestCase):
+    """command_code is accepted by every config schema, resolves to the
+    command-code provider, and bakes in no model ids."""
+
+    def test_build_config_accepts_command_code_with_empty_model_defaults(self) -> None:
+        with _provider_env():
+            cfg = BuildConfig(runtime="command_code")
+
+            self.assertEqual(cfg.ai_provider, "command_code")
+            self.assertEqual(set(cfg.resolved_models().values()), {""})
+
+    def test_callers_can_pin_any_model_verbatim(self) -> None:
+        with _provider_env():
+            cfg = BuildConfig(
+                runtime="command_code", models={"default": "some/future-model-x"}
+            )
+
+            self.assertEqual(
+                set(cfg.resolved_models().values()), {"some/future-model-x"}
+            )
+
+    def test_execution_fast_and_issue_configs_accept_command_code(self) -> None:
+        from swe_af.fast.schemas import FastBuildConfig
+        from swe_af.issue.schemas import IssueBuildConfig
+
+        with _provider_env():
+            self.assertEqual(
+                ExecutionConfig(runtime="command_code").ai_provider, "command_code"
+            )
+            self.assertEqual(
+                FastBuildConfig(runtime="command_code").runtime, "command_code"
+            )
+            self.assertEqual(
+                IssueBuildConfig(runtime="command_code").runtime, "command_code"
+            )
 
 
 class TestDockerfileHarnessModelDefault(unittest.TestCase):

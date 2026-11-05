@@ -150,7 +150,7 @@ flowchart TD
     end
 ```
 
-**Inner Loop** runs up to `max_coding_iterations` (default: 5) per issue. On the default path, the coder writes code and runs tests, then the reviewer approves, requests fixes, or blocks. On the flagged path, QA and the reviewer run **in parallel** after the coder, and a synthesizer merges their feedback into a single fix/approve/block decision. The synthesizer also detects stuck loops — if the coder is cycling without progress, it breaks the loop early.
+**Inner Loop** runs up to `max_coding_iterations` (default: 5) per issue. On the default path, the coder writes code and runs tests, then the reviewer approves, requests fixes, or blocks. A block stays reserved for security, crash and data-loss concerns. A blocking finding means "must be fixed before merge", so it gets a bounded fix pass first: blocking findings lead the feedback, and the loop escalates to the Issue Advisor when the same blocking finding survives the stuck window (three fix iterations) or the iteration budget is exhausted. On the flagged path, QA and the reviewer run **in parallel** after the coder, and a synthesizer merges their feedback into a single fix/approve/block decision. The synthesizer also detects stuck loops — if the coder is cycling without progress, it breaks the loop early.
 
 **Middle Loop** — the Issue Advisor — activates when the inner loop exhausts without approval. It has five actions, each a different recovery strategy:
 
@@ -288,7 +288,7 @@ Previous replan decisions are stored in `DAGState.replan_history` and fed back t
 
 **How SWE-AF implements it.** The Sprint Planner's `IssueGuidance.needs_deeper_qa` flag routes each issue to one of two execution paths:
 
-**Default path (2 LLM calls):** Coder → Reviewer. For straightforward issues — well-scoped, low risk, familiar patterns. The reviewer approves, requests fixes, or blocks (reserved for security/crash/data-loss concerns).
+**Default path (2 LLM calls):** Coder → Reviewer. For straightforward issues — well-scoped, low risk, familiar patterns. The reviewer approves, requests fixes, or blocks (reserved for security/crash/data-loss concerns). A blocking finding has to be fixed before merge, so it is first retried as a fix iteration with the blocking findings leading the feedback, bounded by the stuck window and `max_coding_iterations`; an issue that still cannot clear it escalates to the Issue Advisor.
 
 **Flagged path (4 LLM calls):** Coder → QA + Reviewer (parallel) → Synthesizer. For complex or risky issues — touching interfaces, large scope, unfamiliar territory. QA writes and runs tests independently. The reviewer evaluates code quality. The synthesizer merges both signals into a single decision, detecting contradictions and stuck loops.
 
@@ -422,7 +422,7 @@ SWE-AF orchestrates 22 specialized agents across four phases. Each agent is a re
 
 Every build now uses a single V2 model contract:
 
-- `runtime`: `claude_code`, `open_code`, or `codex`
+- `runtime`: `aforge`, `claude_code`, `open_code`, `codex`, or `command_code` (Python only, explicit opt-in)
 - `models`: flat role map (`default` + explicit role keys)
 
 Supported role keys:
@@ -440,12 +440,24 @@ Runtime defaults:
 
 | Runtime | Base default | Special default |
 |---|---|---|
+| `aforge` | `openrouter/deepseek/deepseek-v4-flash-0731` | auto-selected with a nonblank OpenRouter key and no runtime override |
 | `claude_code` | `sonnet` | `qa_synthesizer=haiku` |
 | `open_code` | `openrouter/deepseek/deepseek-v4-flash-0731` | none |
 | `codex` | `gpt-5.3-codex` | none |
+| `command_code` | blank (CLI default) | Python only, explicit opt-in |
 
-The `open_code` default applies both when the runtime is auto-selected (only
-`OPENROUTER_API_KEY` present — no `ANTHROPIC_API_KEY`, no
-`SWE_DEFAULT_RUNTIME`) and when `SWE_DEFAULT_RUNTIME=open_code` is set
-explicitly. It is also what fast mode resolves to on that path. Override the
-base default with `SWE_DEFAULT_MODEL` or per-request `models`.
+The QA synthesizer uses the same runtime harness and credentials as the coding
+and review roles. Existing `models.qa_synthesizer` overrides using LiteLLM's
+`anthropic/<model>` or `openai/<model>` IDs remain supported: the synthesizer
+removes the matching provider prefix for `claude_code` or `codex`, respectively.
+OpenCode keeps its provider-qualified model IDs. No separate direct-LLM API key
+is required for the Python synthesizer.
+
+With an OpenRouter key and no runtime override, both nodes now select `aforge`,
+including when Anthropic credentials are also set. Select
+`SWE_DEFAULT_RUNTIME=open_code` to retain OpenCode or `claude_code` to retain
+Claude. Request runtime overrides take precedence. Infron alone still selects
+`open_code` on the main path (fast mode needs an explicit runtime); its host
+default is `infron/deepseek/deepseek-v4-flash-0731`. In Docker override the baked
+`HARNESS_MODEL` for Infron too. Override model defaults with `SWE_DEFAULT_MODEL`
+or per-request `models`.

@@ -20,14 +20,30 @@ Copy `.env.example` to `.env` and configure at least one authentication method:
 cp .env.example .env
 ```
 
-**Required — exactly one LLM provider key.** `.env.example` ships with all of
-them commented out; uncomment one. Note that any non-empty `ANTHROPIC_API_KEY`
-(including a leftover placeholder) forces the `claude_code` runtime, so leave
-it commented out unless you mean to use it.
+**Required — authentication for the selected runtime.** `.env.example` ships
+with provider keys commented out. Without an explicit runtime, a nonblank
+`OPENROUTER_API_KEY` selects `aforge`, even with Anthropic credentials present.
+On upgrade this changes existing OpenRouter deployments from OpenCode to
+AForge, and mixed OpenRouter/Anthropic deployments from Claude to AForge,
+including their default model and billing provider. Set
+`SWE_DEFAULT_RUNTIME=open_code` or `SWE_DEFAULT_RUNTIME=claude_code` to retain
+the previous runtime. Request `config.runtime` takes precedence over that setting.
+Explicit model settings still win; use a model supported by the chosen runtime.
+
+`resume_build` also resolves the runtime from its supplied config or the current
+environment; checkpoints do not freeze the original runtime. When resuming a
+pre-upgrade build, pass its previous `config.runtime` or set the deployment
+override before resuming. Existing explicit runtime configs remain valid.
+
+Railway uses this same Python Dockerfile (`railway.toml`) and the same selection
+rules. Set runtime/model overrides in service variables. For host/package
+installs, make the AForge executable available before accepting the new default,
+or retain the previous runtime explicitly.
 
 | Variable | Purpose |
 |---|---|
-| `OPENROUTER_API_KEY` | **Recommended** — OpenRouter key (200+ models). The only secret needed to get started: on its own it auto-selects the `open_code` runtime and defaults every role to `openrouter/deepseek/deepseek-v4-flash-0731` |
+| `OPENROUTER_API_KEY` | OpenRouter key. Auto-selects `aforge` when no runtime is specified, defaulting every role to `openrouter/deepseek/deepseek-v4-flash-0731`, even alongside an Anthropic key |
+| `INFRON_API_KEY` | Infron gateway key. Alone, auto-selects `open_code` on the main path; fast mode needs an explicit `open_code` runtime. In Docker set `HARNESS_MODEL` to an `infron/...` model too |
 | `ANTHROPIC_API_KEY` | Anthropic API key for Claude models (`claude_code` runtime) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code subscription token (uses Pro/Max credits) |
 | `OPENAI_API_KEY` | OpenAI API key |
@@ -58,10 +74,10 @@ Unset `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` in a deployment that poi
 | `AGENTFIELD_SERVER` | Control plane URL | `http://control-plane:8080` (Docker) |
 | `NODE_ID` | Agent node identifier | `swe-planner` |
 | `PORT` | Agent listen port | `8003` |
-| `SWE_DEFAULT_RUNTIME` | Default runtime: `claude_code`, `open_code`, or `codex` | auto — `open_code` when only `OPENROUTER_API_KEY` is set, else `claude_code` |
+| `SWE_DEFAULT_RUNTIME` | Default runtime: `aforge`, `claude_code`, `open_code`, `codex`, or `command_code` (Python only, explicit opt-in) | auto — `aforge` with OpenRouter, main-path `open_code` with only Infron, else `claude_code`; request runtime wins |
 | `SWE_DEFAULT_MODEL` | Default model ID for every role | runtime-specific |
 
-The image registers `MiniMax-M3` and `MiniMax-M2.7` under the direct OpenAI-compatible providers `minimax-global-openai` and `minimax-cn-openai`, and under the Anthropic-compatible OpenCode provider `minimax-anthropic`. Set `ANTHROPIC_BASE_URL` to either regional `/anthropic` URL shown above; the provider configuration appends `/v1`. Use the regional OpenAI base URLs `https://api.minimax.io/v1` and `https://api.minimaxi.com/v1`; keep the external Anthropic base URL exactly as shown without appending `/v1`.
+The image registers `MiniMax-M3.1-Flash` first and `MiniMax-M3` second under the direct OpenAI-compatible providers `minimax-global-openai` and `minimax-cn-openai`, and under the Anthropic-compatible OpenCode provider `minimax-anthropic`. Set `ANTHROPIC_BASE_URL` to either regional `/anthropic` URL shown above; the provider configuration appends `/v1`. Use the regional OpenAI base URLs `https://api.minimax.io/v1` and `https://api.minimaxi.com/v1`; keep the external Anthropic base URL exactly as shown without appending `/v1`.
 
 `ANTHROPIC_BASE_URL` is process-wide, so one deployment cannot route Claude and MiniMax Anthropic-compatible traffic to different endpoints.
 
@@ -69,8 +85,9 @@ The image registers `MiniMax-M3` and `MiniMax-M2.7` under the direct OpenAI-comp
 
 | Package | Minimum Version | Notes |
 |---|---|---|
-| `agentfield` | 0.1.67+ | Python SDK (includes opencode v1.4+ fix) |
-| `claude-agent-sdk` | 0.1.20+ | Claude runtime |
+| `agentfield` | 0.1.130+ | Python SDK with the AForge provider and environment/timeout support |
+| `claude-agent-sdk` | 0.1.20 (pinned) | Claude runtime |
+| AForge CLI | v0.1.0 | Included and checksum-verified in Docker; host/package installs need `aforge` on `PATH` or `AFORGE_BIN` |
 | opencode CLI | 1.4+ | Only if using `open_code` runtime (see Known Issues) |
 | Codex CLI | latest | Installed in the Docker image; required on host only to run `codex login` for ChatGPT subscription auth |
 
@@ -81,7 +98,7 @@ The image registers `MiniMax-M3` and `MiniMax-M2.7` under the direct OpenAI-comp
 ```bash
 git clone https://github.com/Agent-Field/SWE-AF
 cd SWE-AF
-cp .env.example .env   # uncomment exactly ONE provider key
+cp .env.example .env   # configure authentication and any runtime override
 docker compose up -d
 ```
 
@@ -91,6 +108,16 @@ This starts:
 - **swe-fast** on `:8004` — SWE-AF fast mode (`swe-fast` node)
 
 To use Codex with a ChatGPT subscription, run `codex login` on the host before starting Docker and leave `OPENAI_API_KEY` unset for this process. The compose files mount `~/.codex` into both agent containers. To use OpenAI API billing instead, set `SWE_CODEX_AUTH_MODE=api_key` and `OPENAI_API_KEY`.
+
+Both Python and Go images use official Node 22/npm, with `node` and its `nodejs` alias in `/usr/local/bin`. npm's global configuration now lives at `/usr/local/etc/npmrc`, replacing Debian npm's `/etc/npmrc`; migrate custom config mounts/files there or set `NPM_CONFIG_GLOBALCONFIG=/etc/npmrc` to retain the old location. The global install prefix remains `/usr/local`. Scripts that hardcode `/usr/bin/node` should use `/usr/local/bin/node` or `/usr/bin/env node`.
+
+To use Command Code on the Python node, install Node 22+ and `npm install -g command-code@1.82.2` on the host, run `command-code login`, and select `runtime: "command_code"`. Start with `docker compose -f docker-compose.yml -f docker-compose.commandcode.yml up -d` to share the host login with both Python agent services. For a host control plane, use `docker compose -f docker-compose.local.yml -f docker-compose.commandcode.local.yml up -d`. The Go node does not support `command_code`.
+
+The overlays require an existing `~/.commandcode/auth.json` and mount only that file read-only. Normal Compose startup exposes no Command Code host files. The container can write its own configuration and sessions under `/root/.commandcode`; host settings, MCP servers, skills, file history, and transcripts are not imported. For BYOK, supply a dedicated `providers.json` at `/root/.commandcode/providers.json` using a read-only file mount or container configuration, with the provider's required environment variables. Credentials that need refreshing must be refreshed on the host; recreate containers if the host replaces the auth file.
+
+Command Code runs with `--trust` and defaults to `--yolo`, allowing writes and shell commands. Set `permission_mode: "plan"` for read-only planning. This runtime does not enforce the SDK's per-call `tools` allowlist; permissions are governed by the CLI's permission mode.
+
+Use a dedicated login with only the access needed for these builds. An agent with shell access can read the mounted auth file and subprocess environment. CLI events, final text, and error diagnostics are returned to callers and may be saved in build logs, so tool output containing credentials can reach those outputs. A read-only mount protects the host file from modification; it does not hide its contents from the agent. Avoid mounting your entire host `~/.commandcode` directory.
 
 ### Agent Only (connect to existing control plane)
 
